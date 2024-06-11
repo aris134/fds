@@ -175,7 +175,7 @@ DO K=0,KBAR
 ENDDO
 
 CALL CPU_TIME(T_NOW)
-CALL LOOP3D_OMP_CPU()
+CALL LOOP3D_OMP_GPU()
 CALL CPU_TIME(T_END)
 
 WRITE(10,*) 'Time=',T_END-T_NOW
@@ -371,5 +371,198 @@ ENDDO
 
 END SUBROUTINE LOOP3D_OMP_CPU
 
+SUBROUTINE LOOP3D_OMP_GPU()
+
+   ! Compute x-direction flux term FVX
+   
+   !$OMP TARGET PRIVATE(WP,WM,VP,VM,UP,UM,OMXP,OMXM,OMYP,OMYM,OMZP,OMZM,TXZP,TXZM,TXYP,TXYM,TYZP,TYZM)         &
+   !$OMP PRIVATE(IC,IEXP,IEXM,IEYP,IEYM,IEZP,IEZM,RRHO,DUDX,DVDY,DWDZ,VTRM)                                    &
+   !$OMP MAP(TO:UU(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:VV(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:WW(0:IBP1,0:JBP1,0:KBP1))    &
+   !$OMP MAP(TO:OMX(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:OMY(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:OMZ(0:IBP1,0:JBP1,0:KBP1)) &
+   !$OMP MAP(TO:TXY(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:TXZ(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:TYZ(0:IBP1,0:JBP1,0:KBP1)) &
+   !$OMP MAP(TO:CELL_INDEX(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:CELL(0:IC)) MAP(TO:EDGE(0:MAX_EDGE))                  &
+   !$OMP MAP(TO:RHOP(0:IBP1,0:JBP1,0:KBP1)) MAP(TO:RDX(0:IBAR)) MAP(TO:RDY(0:JBAR)) MAP(TO:RDZ(0:KBAR))        &
+   !$OMP MAP(TO:RDXN(0:IBAR)) MAP(TO:RDYN(0:JBAR)) MAP(TO:RDZN(0:KBAR)) MAP(TO:RHO_0(0:KBAR))                  &
+   !$OMP MAP(TO:GX(0:IBAR)) MAP(TO:GY(0:IBAR)) MAP(TO:GZ(0:IBAR)) MAP(TO:MU(0:IBP1,0:JBP1,0:KBP1))             &
+   !$OMP MAP(TO:DP(0:IBP1,0:JBP1,0:KBP1)) MAP(TOFROM:FVX(0:IBP1,0:JBP1,0:KBP1))                                &
+   !$OMP MAP(TOFROM:FVY(0:IBP1,0:JBP1,0:KBP1)) MAP(TOFROM:FVZ(0:IBP1,0:JBP1,0:KBP1))
+   
+   !$OMP DO PRIVATE(WOMY, VOMZ, TXXP, TXXM, DTXXDX, DTXYDY, DTXZDZ)
+   DO K=1,KBAR
+      DO J=1,JBAR
+         DO I=0,IBAR
+            WP    = WW(I,J,K)   + WW(I+1,J,K)
+            WM    = WW(I,J,K-1) + WW(I+1,J,K-1)
+            VP    = VV(I,J,K)   + VV(I+1,J,K)
+            VM    = VV(I,J-1,K) + VV(I+1,J-1,K)
+            OMYP  = OMY(I,J,K)
+            OMYM  = OMY(I,J,K-1)
+            OMZP  = OMZ(I,J,K)
+            OMZM  = OMZ(I,J-1,K)
+            TXZP  = TXZ(I,J,K)
+            TXZM  = TXZ(I,J,K-1)
+            TXYP  = TXY(I,J,K)
+            TXYM  = TXY(I,J-1,K)
+            IC    = CELL_INDEX(I,J,K)
+            IEYP  = CELL(IC)%EDGE_INDEX(8)
+            IEYM  = CELL(IC)%EDGE_INDEX(6)
+            IEZP  = CELL(IC)%EDGE_INDEX(12)
+            IEZM  = CELL(IC)%EDGE_INDEX(10)
+            IF (EDGE(IEYP)%OMEGA(-1)>-1.E5_EB) THEN
+               OMYP = EDGE(IEYP)%OMEGA(-1)
+               TXZP = EDGE(IEYP)%TAU(-1)
+            ENDIF
+            IF (EDGE(IEYM)%OMEGA( 1)>-1.E5_EB) THEN
+               OMYM = EDGE(IEYM)%OMEGA( 1)
+               TXZM = EDGE(IEYM)%TAU( 1)
+            ENDIF
+            IF (EDGE(IEZP)%OMEGA(-2)>-1.E5_EB) THEN
+               OMZP = EDGE(IEZP)%OMEGA(-2)
+               TXYP = EDGE(IEZP)%TAU(-2)
+            ENDIF
+            IF (EDGE(IEZM)%OMEGA( 2)>-1.E5_EB) THEN
+               OMZM = EDGE(IEZM)%OMEGA( 2)
+               TXYM = EDGE(IEZM)%TAU( 2)
+            ENDIF
+            WOMY  = WP*OMYP + WM*OMYM
+            VOMZ  = VP*OMZP + VM*OMZM
+            RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I+1,J,K))
+            DVDY  = (VV(I+1,J,K)-VV(I+1,J-1,K))*RDY(J)
+            DWDZ  = (WW(I+1,J,K)-WW(I+1,J,K-1))*RDZ(K)
+            TXXP  = MU(I+1,J,K)*( FOTH*DP(I+1,J,K) - 2._EB*(DVDY+DWDZ) )
+            DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDY(J)
+            DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZ(K)
+            TXXM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DVDY+DWDZ) )
+            DTXXDX= RDXN(I)*(TXXP-TXXM)
+            DTXYDY= RDY(J) *(TXYP-TXYM)
+            DTXZDZ= RDZ(K) *(TXZP-TXZM)
+            VTRM  = DTXXDX + DTXYDY + DTXZDZ
+            FVX(I,J,K) = 0.25_EB*(WOMY - VOMZ) - GX(I) + RRHO*(GX(I)*RHO_0(K) - VTRM)
+         ENDDO
+      ENDDO
+   ENDDO
+   !$OMP END DO NOWAIT
+   
+   ! Compute y-direction flux term FVY
+   
+   !$OMP DO PRIVATE(WOMX, UOMZ, TYYP, TYYM, DTXYDX, DTYYDY, DTYZDZ)
+   DO K=1,KBAR
+      DO J=0,JBAR
+         DO I=1,IBAR
+            UP    = UU(I,J,K)   + UU(I,J+1,K)
+            UM    = UU(I-1,J,K) + UU(I-1,J+1,K)
+            WP    = WW(I,J,K)   + WW(I,J+1,K)
+            WM    = WW(I,J,K-1) + WW(I,J+1,K-1)
+            OMXP  = OMX(I,J,K)
+            OMXM  = OMX(I,J,K-1)
+            OMZP  = OMZ(I,J,K)
+            OMZM  = OMZ(I-1,J,K)
+            TYZP  = TYZ(I,J,K)
+            TYZM  = TYZ(I,J,K-1)
+            TXYP  = TXY(I,J,K)
+            TXYM  = TXY(I-1,J,K)
+            IC    = CELL_INDEX(I,J,K)
+            IEXP  = CELL(IC)%EDGE_INDEX(4)
+            IEXM  = CELL(IC)%EDGE_INDEX(2)
+            IEZP  = CELL(IC)%EDGE_INDEX(12)
+            IEZM  = CELL(IC)%EDGE_INDEX(11)
+            IF (EDGE(IEXP)%OMEGA(-2)>-1.E5_EB) THEN
+               OMXP = EDGE(IEXP)%OMEGA(-2)
+               TYZP = EDGE(IEXP)%TAU(-2)
+            ENDIF
+            IF (EDGE(IEXM)%OMEGA( 2)>-1.E5_EB) THEN
+               OMXM = EDGE(IEXM)%OMEGA( 2)
+               TYZM = EDGE(IEXM)%TAU( 2)
+            ENDIF
+            IF (EDGE(IEZP)%OMEGA(-1)>-1.E5_EB) THEN
+               OMZP = EDGE(IEZP)%OMEGA(-1)
+               TXYP = EDGE(IEZP)%TAU(-1)
+            ENDIF
+            IF (EDGE(IEZM)%OMEGA( 1)>-1.E5_EB) THEN
+               OMZM = EDGE(IEZM)%OMEGA( 1)
+               TXYM = EDGE(IEZM)%TAU( 1)
+            ENDIF
+            WOMX  = WP*OMXP + WM*OMXM
+            UOMZ  = UP*OMZP + UM*OMZM
+            RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I,J+1,K))
+            DUDX  = (UU(I,J+1,K)-UU(I-1,J+1,K))*RDX(I)
+            DWDZ  = (WW(I,J+1,K)-WW(I,J+1,K-1))*RDZ(K)
+            TYYP  = MU(I,J+1,K)*( FOTH*DP(I,J+1,K) - 2._EB*(DUDX+DWDZ) )
+            DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDX(I)
+            DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZ(K)
+            TYYM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DWDZ) )
+            DTXYDX= RDX(I) *(TXYP-TXYM)
+            DTYYDY= RDYN(J)*(TYYP-TYYM)
+            DTYZDZ= RDZ(K) *(TYZP-TYZM)
+            VTRM  = DTXYDX + DTYYDY + DTYZDZ
+            FVY(I,J,K) = 0.25_EB*(UOMZ - WOMX) - GY(I) + RRHO*(GY(I)*RHO_0(K) - VTRM)
+         ENDDO
+      ENDDO
+   ENDDO
+   !$OMP END DO NOWAIT
+   
+   ! Compute z-direction flux term FVZ
+   
+   !$OMP DO PRIVATE(UOMY, VOMX, TZZP, TZZM, DTXZDX, DTYZDY, DTZZDZ)
+   DO K=0,KBAR
+      DO J=1,JBAR
+         DO I=1,IBAR
+            UP    = UU(I,J,K)   + UU(I,J,K+1)
+            UM    = UU(I-1,J,K) + UU(I-1,J,K+1)
+            VP    = VV(I,J,K)   + VV(I,J,K+1)
+            VM    = VV(I,J-1,K) + VV(I,J-1,K+1)
+            OMYP  = OMY(I,J,K)
+            OMYM  = OMY(I-1,J,K)
+            OMXP  = OMX(I,J,K)
+            OMXM  = OMX(I,J-1,K)
+            TXZP  = TXZ(I,J,K)
+            TXZM  = TXZ(I-1,J,K)
+            TYZP  = TYZ(I,J,K)
+            TYZM  = TYZ(I,J-1,K)
+            IC    = CELL_INDEX(I,J,K)
+            IEXP  = CELL(IC)%EDGE_INDEX(4)
+            IEXM  = CELL(IC)%EDGE_INDEX(3)
+            IEYP  = CELL(IC)%EDGE_INDEX(8)
+            IEYM  = CELL(IC)%EDGE_INDEX(7)
+            IF (EDGE(IEXP)%OMEGA(-1)>-1.E5_EB) THEN
+               OMXP = EDGE(IEXP)%OMEGA(-1)
+               TYZP = EDGE(IEXP)%TAU(-1)
+            ENDIF
+            IF (EDGE(IEXM)%OMEGA( 1)>-1.E5_EB) THEN
+               OMXM = EDGE(IEXM)%OMEGA( 1)
+               TYZM = EDGE(IEXM)%TAU( 1)
+            ENDIF
+            IF (EDGE(IEYP)%OMEGA(-2)>-1.E5_EB) THEN
+               OMYP = EDGE(IEYP)%OMEGA(-2)
+               TXZP = EDGE(IEYP)%TAU(-2)
+            ENDIF
+            IF (EDGE(IEYM)%OMEGA( 2)>-1.E5_EB) THEN
+               OMYM = EDGE(IEYM)%OMEGA( 2)
+               TXZM = EDGE(IEYM)%TAU( 2)
+            ENDIF
+            UOMY  = UP*OMYP + UM*OMYM
+            VOMX  = VP*OMXP + VM*OMXM
+            RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I,J,K+1))
+            DUDX  = (UU(I,J,K+1)-UU(I-1,J,K+1))*RDX(I)
+            DVDY  = (VV(I,J,K+1)-VV(I,J-1,K+1))*RDY(J)
+            TZZP  = MU(I,J,K+1)*( FOTH*DP(I,J,K+1) - 2._EB*(DUDX+DVDY) )
+            DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDX(I)
+            DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDY(J)
+            TZZM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DVDY) )
+            DTXZDX= RDX(I) *(TXZP-TXZM)
+            DTYZDY= RDY(J) *(TYZP-TYZM)
+            DTZZDZ= RDZN(K)*(TZZP-TZZM)
+            VTRM  = DTXZDX + DTYZDY + DTZZDZ
+            FVZ(I,J,K) = 0.25_EB*(VOMX - UOMY) - GZ(I) + RRHO*(GZ(I)*0.5_EB*(RHO_0(K)+RHO_0(K+1)) - VTRM)
+         ENDDO
+      ENDDO
+   ENDDO
+   !$OMP END DO NOWAIT
+   
+   !$OMP END TARGET
+   
+   END SUBROUTINE LOOP3D_OMP_GPU
+
 END PROGRAM LOOP3D
+
 
