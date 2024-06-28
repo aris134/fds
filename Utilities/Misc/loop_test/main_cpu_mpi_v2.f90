@@ -119,6 +119,14 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     GLOBAL_MAX(2) = GLOB_MAX_J
     GLOBAL_MAX(3) = GLOB_MAX_K
 
+    ! Initialization cumulative timers to zero
+    T_TOTAL_FLUX_AVG = 0
+    T_TOTAL_LOOP3D = 0
+    T_TOTAL_TAU_OMG = 0
+    T_TOTAL_TAU_OMG_EXCHANGE = 0
+    T_TOTAL_VEL = 0
+    T_TOTAL_VEL_EXCHANGE = 0
+
     ! Decompose the domain
     ALLOCATE(ALL_TASK_BBOXES(NUM_TASKS * BOX_SIZE)) ! AoS format: ..., imin_p, jmin_p, kmin_p, imax_p, jmax_p, kmax_p, imin_(p+1), ...
     ALLOCATE(ALL_TASK_EXT_BBOXES(NUM_TASKS * BOX_SIZE)) ! all task bboxes extended by halo depth
@@ -330,7 +338,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     CC => CELL_INDEX
 
     CALL EXCHANGE_CELL_INDEX(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
-                            HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,CELL_INDEX_SEND,CELL_INDEX_RECV,CC,MY_RANK)
+                            HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,CELL_INDEX_SEND,CELL_INDEX_RECV,CC,MY_RANK,&
+                            TOTAL_SEND_PTS,TOTAL_RECV_PTS,SEND_COORDS)
     IC = 0
     MAX_EDGE=-1
     DO K=LOC_MIN_K_P1,LOC_MAX_K
@@ -391,13 +400,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     SETUP_TIME = T_SETUP_END - T_SETUP_START
     CALL MPI_REDUCE(SETUP_TIME, MAX_SETUP_TIME, 1, MPI_DOUBLE_PRECISION, MPI_MAX, 0, MPI_COMM_WORLD, IERR)
 
-    ! Initialization cumulative timers to zero
-    T_TOTAL_FLUX_AVG = 0
-    T_TOTAL_LOOP3D = 0
-    T_TOTAL_TAU_OMG = 0
-    T_TOTAL_TAU_OMG_EXCHANGE = 0
-    T_TOTAL_VEL = 0
-    T_TOTAL_VEL_EXCHANGE = 0
+    ! BEGIN SIM LOOP
     T_SIM_START = MPI_WTIME()
     SIM_LOOP: DO ISTEP = 1, NUM_TIME_STEPS
        ! 1. First, update the velocity field
@@ -411,7 +414,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
        CALL EXCHANGE_VELOCITY(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
                                 HALO_RECV_DISPLS,U_SEND,V_SEND,W_SEND,U_RECV,V_RECV,W_RECV,&
                                 RECV_COORDS,RECV_COORD_DISPLS,UU,VV,WW,MY_RANK,LOC_MIN_HALO_I,LOC_MIN_HALO_J,&
-                                LOC_MIN_HALO_K,LOC_MAX_HALO_I,LOC_MAX_HALO_J,LOC_MAX_HALO_K)
+                                LOC_MIN_HALO_K,LOC_MAX_HALO_I,LOC_MAX_HALO_J,LOC_MAX_HALO_K,&
+                                TOTAL_SEND_PTS,TOTAL_RECV_PTS,SEND_COORDS)
        T_ITER_END_VEL_EXCHANGE = MPI_WTIME()
        T_TOTAL_VEL_EXCHANGE = T_TOTAL_VEL_EXCHANGE + (T_ITER_END_VEL_EXCHANGE - T_ITER_START_VEL_EXCHANGE)
        ! 3. Compute Tau & OMG
@@ -425,7 +429,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
        CALL EXCHANGE_TAU_OMEGA(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
                                HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,OMX_SEND,OMX_RECV,OMY_SEND,&
                                OMY_RECV,OMZ_SEND,OMZ_RECV,TXZ_SEND,TXZ_RECV,TXY_SEND,TXY_RECV,TYZ_SEND,TYZ_RECV,&
-                               OMX,OMY,OMZ,TXZ,TXY,TYZ)
+                               OMX,OMY,OMZ,TXZ,TXY,TYZ,&
+                               TOTAL_SEND_PTS,TOTAL_RECV_PTS,SEND_COORDS)
        T_ITER_END_TAU_OMG_EXCHANGE = MPI_WTIME()
        T_TOTAL_TAU_OMG_EXCHANGE = T_TOTAL_TAU_OMG_EXCHANGE + (T_ITER_END_TAU_OMG_EXCHANGE - T_ITER_START_TAU_OMG_EXCHANGE)
        ! 5. Update the flux terms
@@ -664,7 +669,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     SUBROUTINE EXCHANGE_TAU_OMEGA(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
                             HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,OMX_SEND,OMX_RECV,OMY_SEND,OMY_RECV,OMZ_SEND,&
                             OMZ_RECV,TXZ_SEND,TXZ_RECV,TXY_SEND,TXY_RECV,TYZ_SEND,TYZ_RECV,&
-                            OMX,OMY,OMZ,TXZ,TXY,TYZ)
+                            OMX,OMY,OMZ,TXZ,TXY,TYZ,&
+                            TOTAL_SEND_PTS,TOTAL_RECV_PTS,SEND_COORDS)
         
         INTEGER, INTENT(IN) :: NUM_NBRS
         INTEGER, INTENT(IN) :: NBR_EXT_BBOXES (:)
@@ -673,7 +679,9 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         INTEGER, INTENT(IN) :: HALO_RECV_SIZES (:)
         INTEGER, INTENT(IN) :: HALO_RECV_DISPLS (:)
         INTEGER, INTENT(IN) :: RECV_COORDS (:)
+        INTEGER, INTENT(IN) :: SEND_COORDS (:)
         INTEGER, INTENT(IN) :: RECV_COORD_DISPLS (:)
+        INTEGER, INTENT(IN) :: TOTAL_SEND_PTS, TOTAL_RECV_PTS
         REAL(EB), INTENT(IN OUT) :: OMX_SEND (:)
         REAL(EB), INTENT(IN OUT) :: OMY_SEND (:)
         REAL(EB), INTENT(IN OUT) :: OMZ_SEND (:)
@@ -694,24 +702,17 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         REAL(EB), POINTER, INTENT(IN OUT) :: TYZ (:,:,:)
         INTEGER :: RK, POINT, COORD_OFFSET, RANK_OFFSET, RECV_PTS, I, J, K
 
-        DO RK=1, NUM_NBRS
-            RANK_OFFSET = HALO_SEND_DISPLS(RK)
-            POINT = 0
-            DO K=LOC_MIN_K,LOC_MAX_K
-                DO J=LOC_MIN_J,LOC_MAX_J
-                    DO I=LOC_MIN_I,LOC_MAX_I
-                        IF (IS_PT_INSIDE(I, J, K, NBR_EXT_BBOXES, RK-1, BOX_SIZE)) THEN
-                            OMX_SEND(RANK_OFFSET + POINT) = OMX(I,J,K)
-                            OMY_SEND(RANK_OFFSET + POINT) = OMY(I,J,K)
-                            OMZ_SEND(RANK_OFFSET + POINT) = OMZ(I,J,K)
-                            TXZ_SEND(RANK_OFFSET + POINT) = TXZ(I,J,K)
-                            TXY_SEND(RANK_OFFSET + POINT) = TXY(I,J,K)
-                            TYZ_SEND(RANK_OFFSET + POINT) = TYZ(I,J,K)
-                            POINT = POINT + 1
-                        END IF
-                    END DO
-                END DO
-            END DO
+        ! Set up the values to send via halo exchange
+        DO POINT=0,TOTAL_SEND_PTS-1
+            I = SEND_COORDS(POINT*3 + 1)
+            J = SEND_COORDS(POINT*3 + 2)
+            K = SEND_COORDS(POINT*3 + 3)
+            OMX_SEND(POINT + 1) = OMX(I,J,K)
+            OMY_SEND(POINT + 1) = OMY(I,J,K)
+            OMZ_SEND(POINT + 1) = OMZ(I,J,K)
+            TXZ_SEND(POINT + 1) = TXZ(I,J,K)
+            TXY_SEND(POINT + 1) = TXY(I,J,K)
+            TYZ_SEND(POINT + 1) = TYZ(I,J,K)
         END DO
 
         ! Exchange each of the velocity components along the halo regions
@@ -722,28 +723,24 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         CALL EXCHANGE_DOUBLE_DATA(TXZ_SEND,TXZ_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(TYZ_SEND,TYZ_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
 
-        ! Set up the communicated velocities
-        DO RK=1, NUM_NBRS
-            RANK_OFFSET = HALO_RECV_DISPLS(RK)
-            COORD_OFFSET = RECV_COORD_DISPLS(RK)
-            RECV_PTS = HALO_RECV_SIZES(RK)
-            DO POINT=0,RECV_PTS-1
-                I = RECV_COORDS(COORD_OFFSET + POINT*3)
-                J = RECV_COORDS(COORD_OFFSET + POINT*3 + 1)
-                K = RECV_COORDS(COORD_OFFSET + POINT*3 + 2)
-                OMX(I,J,K) = OMX_RECV(RANK_OFFSET + POINT)
-                OMY(I,J,K) = OMY_RECV(RANK_OFFSET + POINT)
-                OMZ(I,J,K) = OMZ_RECV(RANK_OFFSET + POINT)
-                TXZ(I,J,K) = TXZ_RECV(RANK_OFFSET + POINT)
-                TXY(I,J,K) = TXY_RECV(RANK_OFFSET + POINT)
-                TYZ(I,J,K) = TYZ_RECV(RANK_OFFSET + POINT)
-            END DO
+        ! Set up the communicated values received through halo exchange
+        DO POINT=0,TOTAL_RECV_PTS-1
+            I = RECV_COORDS(POINT*3 + 1)
+            J = RECV_COORDS(POINT*3 + 2)
+            K = RECV_COORDS(POINT*3 + 3)
+            OMX(I,J,K) = OMX_RECV(POINT+1)
+            OMY(I,J,K) = OMY_RECV(POINT+1)
+            OMZ(I,J,K) = OMZ_RECV(POINT+1)
+            TXZ(I,J,K) = TXZ_RECV(POINT+1)
+            TXY(I,J,K) = TXY_RECV(POINT+1)
+            TYZ(I,J,K) = TYZ_RECV(POINT+1)
         END DO
 
     END SUBROUTINE EXCHANGE_TAU_OMEGA
 
     SUBROUTINE EXCHANGE_CELL_INDEX(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
-                                  HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,CELL_INDEX_SEND,CELL_INDEX_RECV,CC,MY_RANK)
+                                  HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,CELL_INDEX_SEND,CELL_INDEX_RECV,CC,MY_RANK,&
+                                  TOTAL_SEND_PTS,TOTAL_RECV_PTS,SEND_COORDS)
     
         INTEGER, INTENT(IN) :: NUM_NBRS
         INTEGER, INTENT(IN) :: NBR_EXT_BBOXES (:)
@@ -752,42 +749,29 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         INTEGER, INTENT(IN) :: HALO_RECV_SIZES (:)
         INTEGER, INTENT(IN) :: HALO_RECV_DISPLS (:)
         INTEGER, INTENT(IN) :: RECV_COORDS (:)
+        INTEGER, INTENT(IN) :: SEND_COORDS (:)
         INTEGER, INTENT(IN) :: RECV_COORD_DISPLS (:)
+        INTEGER, INTENT(IN) :: TOTAL_SEND_PTS, TOTAL_RECV_PTS
         INTEGER, INTENT(IN) :: MY_RANK
         INTEGER, POINTER, INTENT(IN OUT) :: CC (:,:,:) ! pointer to cell index
         INTEGER, INTENT(IN OUT) :: CELL_INDEX_SEND (:)
         INTEGER, INTENT(IN OUT) :: CELL_INDEX_RECV (:)
         INTEGER :: RK, POINT, COORD_OFFSET, RANK_OFFSET, RECV_PTS, I, J, K, DUMMY
 
-        DO RK=1, NUM_NBRS
-            RANK_OFFSET = HALO_SEND_DISPLS(RK)
-            POINT = 0
-            DO K=LOC_MIN_K,LOC_MAX_K
-                DO J=LOC_MIN_J,LOC_MAX_J
-                    DO I=LOC_MIN_I,LOC_MAX_I
-                        IF (IS_PT_INSIDE(I, J, K, NBR_EXT_BBOXES, RK-1, BOX_SIZE)) THEN
-                            CELL_INDEX_SEND(RANK_OFFSET + POINT) = CC(I,J,K)
-                            POINT = POINT + 1
-                        END IF
-                    END DO
-                END DO
-            END DO
+        DO POINT=0,TOTAL_SEND_PTS-1
+            I = SEND_COORDS(POINT*3 + 1)
+            J = SEND_COORDS(POINT*3 + 2)
+            K = SEND_COORDS(POINT*3 + 3)
+            CELL_INDEX_SEND(POINT + 1) = CC(I,J,K)
         END DO
         
         CALL EXCHANGE_INTEGER_DATA(CELL_INDEX_SEND,CELL_INDEX_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
 
-
-        ! Setup received cell index 
-        DO RK=1, NUM_NBRS
-            RANK_OFFSET = HALO_RECV_DISPLS(RK)
-            COORD_OFFSET = RECV_COORD_DISPLS(RK)
-            RECV_PTS = HALO_RECV_SIZES(RK)
-            DO POINT=0,RECV_PTS-1
-                I = RECV_COORDS(COORD_OFFSET + POINT*3)
-                J = RECV_COORDS(COORD_OFFSET + POINT*3 + 1)
-                K = RECV_COORDS(COORD_OFFSET + POINT*3 + 2)
-                CC(I,J,K) = CELL_INDEX_RECV(RANK_OFFSET + POINT)
-            END DO
+        DO POINT=0,TOTAL_RECV_PTS-1
+            I = RECV_COORDS(POINT*3 + 1)
+            J = RECV_COORDS(POINT*3 + 2)
+            K = RECV_COORDS(POINT*3 + 3)
+            CC(I,J,K) = CELL_INDEX_RECV(POINT+1)
         END DO
 
     END SUBROUTINE EXCHANGE_CELL_INDEX
@@ -795,7 +779,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     SUBROUTINE EXCHANGE_VELOCITY(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
                                    HALO_RECV_DISPLS,U_SEND,V_SEND,W_SEND,U_RECV,V_RECV,W_RECV,&
                                    RECV_COORDS,RECV_COORD_DISPLS,UU,VV,WW,&
-                                   MY_RANK,LOC_MIN_HALO_I,LOC_MIN_HALO_J,LOC_MIN_HALO_K,LOC_MAX_HALO_I,LOC_MAX_HALO_J,LOC_MAX_HALO_K)
+                                   MY_RANK,LOC_MIN_HALO_I,LOC_MIN_HALO_J,LOC_MIN_HALO_K,LOC_MAX_HALO_I,LOC_MAX_HALO_J,LOC_MAX_HALO_K,&
+                                   TOTAL_SEND_PTS, TOTAL_RECV_PTS, SEND_COORDS)
 
         INTEGER, INTENT(IN) :: MY_RANK,LOC_MIN_HALO_I,LOC_MIN_HALO_J,LOC_MIN_HALO_K,LOC_MAX_HALO_I,LOC_MAX_HALO_J,LOC_MAX_HALO_K
         INTEGER, INTENT(IN) :: NUM_NBRS
@@ -805,7 +790,9 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         INTEGER, INTENT(IN) :: HALO_RECV_SIZES (:)
         INTEGER, INTENT(IN) :: HALO_RECV_DISPLS (:)
         INTEGER, INTENT(IN) :: RECV_COORDS (:)
+        INTEGER, INTENT(IN) :: SEND_COORDS (:)
         INTEGER, INTENT(IN) :: RECV_COORD_DISPLS (:)
+        INTEGER, INTENT(IN) :: TOTAL_SEND_PTS, TOTAL_RECV_PTS
         REAL(EB), INTENT(IN OUT) :: U_SEND (:)
         REAL(EB), INTENT(IN OUT) :: V_SEND (:)
         REAL(EB), INTENT(IN OUT) :: W_SEND (:)
@@ -817,43 +804,29 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         REAL(EB), POINTER, INTENT(IN OUT) :: WW (:,:,:)
         INTEGER :: RK, POINT, COORD_OFFSET, RANK_OFFSET, RECV_PTS, I, J, K
 
-        DO RK=1, NUM_NBRS
-            RANK_OFFSET = HALO_SEND_DISPLS(RK)
-            POINT = 0
-            DO K=LOC_MIN_K,LOC_MAX_K
-                DO J=LOC_MIN_J,LOC_MAX_J
-                    DO I=LOC_MIN_I,LOC_MAX_I
-                        IF (IS_PT_INSIDE(I, J, K, NBR_EXT_BBOXES, RK-1, BOX_SIZE)) THEN
-                            U_SEND(RANK_OFFSET + POINT) = UU(I,J,K)
-                            V_SEND(RANK_OFFSET + POINT) = VV(I,J,K)
-                            W_SEND(RANK_OFFSET + POINT) = WW(I,J,K)
-                            POINT = POINT + 1
-                        END IF
-                    END DO
-                END DO
-            END DO
+        ! Set up the velocities to send via halo exchange
+        DO POINT=0,TOTAL_SEND_PTS-1
+            I = SEND_COORDS(POINT*3 + 1)
+            J = SEND_COORDS(POINT*3 + 2)
+            K = SEND_COORDS(POINT*3 + 3)
+            U_SEND(POINT + 1) = UU(I,J,K)
+            V_SEND(POINT + 1) = VV(I,J,K)
+            W_SEND(POINT + 1) = WW(I,J,K)
         END DO
+
         ! Exchange each of the velocity components along the halo regions
         CALL EXCHANGE_DOUBLE_DATA(U_SEND,U_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(V_SEND,V_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(W_SEND,W_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
-        ! Set up the communicated velocities
-        DO RK=1, NUM_NBRS
-            RANK_OFFSET = HALO_RECV_DISPLS(RK)
-            COORD_OFFSET = RECV_COORD_DISPLS(RK)
-            RECV_PTS = HALO_RECV_SIZES(RK)
-            DO POINT=0,RECV_PTS-1
-                I = RECV_COORDS(COORD_OFFSET + POINT*3)
-                J = RECV_COORDS(COORD_OFFSET + POINT*3 + 1)
-                K = RECV_COORDS(COORD_OFFSET + POINT*3 + 2)
-                ! Error checker. This statement should never print.
-                IF ((I < LOC_MIN_HALO_I .OR. I > LOC_MAX_HALO_I) .OR. (J < LOC_MIN_HALO_J .OR. J > LOC_MAX_HALO_J) .OR. (K < LOC_MIN_HALO_K .OR. K > LOC_MAX_HALO_K)) THEN 
-                    WRITE(*,*) 'RANK ',MY_RANK,' RECEIVED AN INVALID COORDINATE (I,J,K): ',I,',',J,',',K,' FROM NEIGHBOR RANK=',NBR_RANKS(RK)
-                END IF
-                UU(I,J,K) = U_RECV(RANK_OFFSET + POINT)
-                VV(I,J,K) = V_RECV(RANK_OFFSET + POINT)
-                WW(I,J,K) = W_RECV(RANK_OFFSET + POINT)
-            END DO
+        
+        ! Set up the communicated velocities received through halo exchange
+        DO POINT=0,TOTAL_RECV_PTS-1
+            I = RECV_COORDS(POINT*3 + 1)
+            J = RECV_COORDS(POINT*3 + 2)
+            K = RECV_COORDS(POINT*3 + 3)
+            UU(I,J,K) = U_RECV(POINT+1)
+            VV(I,J,K) = V_RECV(POINT+1)
+            WW(I,J,K) = W_RECV(POINT+1)
         END DO
 
     END SUBROUTINE EXCHANGE_VELOCITY
@@ -919,6 +892,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
                             SEND_COORDS(COORD_OFFSET + POINT*3 + 1) = J
                             SEND_COORDS(COORD_OFFSET + POINT*3 + 2) = K
                             POINT = POINT + 1
+                            ! SEND_MAP(I,J,K)
                         END IF
                     END DO
                 END DO
