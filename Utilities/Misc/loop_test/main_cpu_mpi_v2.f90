@@ -22,6 +22,7 @@ PROGRAM LOOP3D
     INTEGER :: MY_BBOX(6)
     INTEGER, ALLOCATABLE, DIMENSION(:) :: HALO_SEND_SIZES, HALO_SEND_DISPLS, SEND_COORD_DISPLS
     INTEGER, ALLOCATABLE, DIMENSION(:) :: HALO_RECV_SIZES, HALO_RECV_DISPLS, RECV_COORD_DISPLS
+    INTEGER, ALLOCATABLE, DIMENSION(:) :: TASK_VOLUMES
     INTEGER :: TOTAL_SEND_PTS, TOTAL_RECV_PTS
     INTEGER :: NUM_NBRS ! number of ranks that neighbor this one
     INTEGER, ALLOCATABLE, DIMENSION(:) :: NBR_RANKS ! list of ranks that neighbor this one
@@ -130,6 +131,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     ! Decompose the domain
     ALLOCATE(ALL_TASK_BBOXES(NUM_TASKS * BOX_SIZE)) ! AoS format: ..., imin_p, jmin_p, kmin_p, imax_p, jmax_p, kmax_p, imin_(p+1), ...
     ALLOCATE(ALL_TASK_EXT_BBOXES(NUM_TASKS * BOX_SIZE)) ! all task bboxes extended by halo depth
+    ALLOCATE(TASK_VOLUMES(NUM_TASKS))
     CALL DECOMPOSE_DOMAIN(ALL_TASK_BBOXES, GLOB_MIN_I, GLOB_MIN_J, GLOB_MIN_K, GLOB_MAX_I, GLOB_MAX_J, GLOB_MAX_K, BOX_SIZE, NUM_TASKS, MY_RANK)
     ! extract the local task bounds from ALL_TASK_BBOXES. These are INCLUSIVE endpoints of the rank's local domain bounding box
     LOC_MIN_I = ALL_TASK_BBOXES(MY_RANK * BOX_SIZE)
@@ -144,6 +146,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     MY_BBOX(4) = LOC_MAX_I
     MY_BBOX(5) = LOC_MAX_J
     MY_BBOX(6) = LOC_MAX_K
+    TASK_VOLUMES = 0
 
     ! Determine the neighboring ranks, and neighboring rank bounding boxes...
     CALL DETERMINE_NUM_NEIGHBORS(MY_RANK, GLOBAL_MIN, GLOBAL_MAX, MY_BBOX, NUM_TASKS, NUM_NBRS, ALL_TASK_BBOXES, ALL_TASK_EXT_BBOXES, HALO_DEPTH, BOX_SIZE)
@@ -478,6 +481,17 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         WRITE(10,*) 'Ending Loop3D'
         CLOSE(10)
         WRITE(*,*) 'Loop3D done.'
+    END IF
+
+    ! Print out volume histogram
+    TASK_VOLUMES(MY_RANK) = (LOC_MAX_I-LOC_MIN_I) * (LOC_MAX_J-LOC_MIN_J) * (LOC_MAX_K-LOC_MIN_K)
+    MPI_REDUCE(MPI_IN_PLACE, TASK_VOLUMES, NUM_TASKS, MPI_INTEGER, MPI_SUM, 0, MPI_COMM_WORLD, IERR)
+    IF (MY_RANK==0) THEN 
+        OPEN(2, file = 'VOLUME_HISTOGRAM.TXT', status='new') 
+        DO RK=0, NUM_TASKS-1
+            WRITE(2,*) RK, TASK_VOLUMES(RK)
+        END DO
+        CLOSE(2)
     END IF
 
     CALL MPI_FINALIZE(IERR)
@@ -1448,179 +1462,6 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         END IF
             
     END FUNCTION IC_VAL
-
-    SUBROUTINE LOOP3D_SERIAL_CPU()
-    
-        ! Compute x-direction flux term FVX
-            
-        DO K=LOC_MIN_K_P1,LOC_MAX_K
-           DO J=LOC_MIN_J_P1,LOC_MAX_J
-              DO I=LOC_MIN_I,LOC_MAX_I
-                 WP    = WW(I,J,K)   + WW(I+1,J,K)
-                 WM    = WW(I,J,K-1) + WW(I+1,J,K-1)
-                 VP    = VV(I,J,K)   + VV(I+1,J,K)
-                 VM    = VV(I,J-1,K) + VV(I+1,J-1,K)
-                 OMYP  = OMY(I,J,K)
-                 OMYM  = OMY(I,J,K-1)
-                 OMZP  = OMZ(I,J,K)
-                 OMZM  = OMZ(I,J-1,K)
-                 TXZP  = TXZ(I,J,K)
-                 TXZM  = TXZ(I,J,K-1)
-                 TXYP  = TXY(I,J,K)
-                 TXYM  = TXY(I,J-1,K)
-                 IC    = CELL_INDEX(I,J,K)
-                 IEYP  = CELL(IC)%EDGE_INDEX(8)
-                 IEYM  = CELL(IC)%EDGE_INDEX(6)
-                 IEZP  = CELL(IC)%EDGE_INDEX(12)
-                 IEZM  = CELL(IC)%EDGE_INDEX(10)
-                 IF (EDGE(IEYP)%OMEGA(-1)>-1.E5_EB) THEN
-                    OMYP = EDGE(IEYP)%OMEGA(-1)
-                    TXZP = EDGE(IEYP)%TAU(-1)
-                 ENDIF
-                 IF (EDGE(IEYM)%OMEGA( 1)>-1.E5_EB) THEN
-                    OMYM = EDGE(IEYM)%OMEGA( 1)
-                    TXZM = EDGE(IEYM)%TAU( 1)
-                 ENDIF
-                 IF (EDGE(IEZP)%OMEGA(-2)>-1.E5_EB) THEN
-                    OMZP = EDGE(IEZP)%OMEGA(-2)
-                    TXYP = EDGE(IEZP)%TAU(-2)
-                 ENDIF
-                 IF (EDGE(IEZM)%OMEGA( 2)>-1.E5_EB) THEN
-                    OMZM = EDGE(IEZM)%OMEGA( 2)
-                    TXYM = EDGE(IEZM)%TAU( 2)
-                 ENDIF
-                 WOMY  = WP*OMYP + WM*OMYM
-                 VOMZ  = VP*OMZP + VM*OMZM
-                 RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I+1,J,K))
-                 DVDY  = (VV(I+1,J,K)-VV(I+1,J-1,K))*RDY(J)
-                 DWDZ  = (WW(I+1,J,K)-WW(I+1,J,K-1))*RDZ(K)
-                 TXXP  = MU(I+1,J,K)*( FOTH*DP(I+1,J,K) - 2._EB*(DVDY+DWDZ) )
-                 DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDY(J)
-                 DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZ(K)
-                 TXXM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DVDY+DWDZ) )
-                 DTXXDX= RDXN(I)*(TXXP-TXXM)
-                 DTXYDY= RDY(J) *(TXYP-TXYM)
-                 DTXZDZ= RDZ(K) *(TXZP-TXZM)
-                 VTRM  = DTXXDX + DTXYDY + DTXZDZ
-                 FVX(I,J,K) = 0.25_EB*(WOMY - VOMZ) - GX(I) + RRHO*(GX(I)*RHO_0(K) - VTRM)
-              ENDDO
-           ENDDO
-        ENDDO
-        
-        ! Compute y-direction flux term FVY
-        
-        DO K=LOC_MIN_K_P1,LOC_MAX_K
-           DO J=LOC_MIN_J,LOC_MAX_J
-              DO I=LOC_MIN_I_P1,LOC_MAX_I
-                 UP    = UU(I,J,K)   + UU(I,J+1,K)
-                 UM    = UU(I-1,J,K) + UU(I-1,J+1,K)
-                 WP    = WW(I,J,K)   + WW(I,J+1,K)
-                 WM    = WW(I,J,K-1) + WW(I,J+1,K-1)
-                 OMXP  = OMX(I,J,K)
-                 OMXM  = OMX(I,J,K-1)
-                 OMZP  = OMZ(I,J,K)
-                 OMZM  = OMZ(I-1,J,K)
-                 TYZP  = TYZ(I,J,K)
-                 TYZM  = TYZ(I,J,K-1)
-                 TXYP  = TXY(I,J,K)
-                 TXYM  = TXY(I-1,J,K)
-                 IC    = CELL_INDEX(I,J,K)
-                 IEXP  = CELL(IC)%EDGE_INDEX(4)
-                 IEXM  = CELL(IC)%EDGE_INDEX(2)
-                 IEZP  = CELL(IC)%EDGE_INDEX(12)
-                 IEZM  = CELL(IC)%EDGE_INDEX(11)
-                 IF (EDGE(IEXP)%OMEGA(-2)>-1.E5_EB) THEN
-                    OMXP = EDGE(IEXP)%OMEGA(-2)
-                    TYZP = EDGE(IEXP)%TAU(-2)
-                 ENDIF
-                 IF (EDGE(IEXM)%OMEGA( 2)>-1.E5_EB) THEN
-                    OMXM = EDGE(IEXM)%OMEGA( 2)
-                    TYZM = EDGE(IEXM)%TAU( 2)
-                 ENDIF
-                 IF (EDGE(IEZP)%OMEGA(-1)>-1.E5_EB) THEN
-                    OMZP = EDGE(IEZP)%OMEGA(-1)
-                    TXYP = EDGE(IEZP)%TAU(-1)
-                 ENDIF
-                 IF (EDGE(IEZM)%OMEGA( 1)>-1.E5_EB) THEN
-                    OMZM = EDGE(IEZM)%OMEGA( 1)
-                    TXYM = EDGE(IEZM)%TAU( 1)
-                 ENDIF
-                 WOMX  = WP*OMXP + WM*OMXM
-                 UOMZ  = UP*OMZP + UM*OMZM
-                 RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I,J+1,K))
-                 DUDX  = (UU(I,J+1,K)-UU(I-1,J+1,K))*RDX(I)
-                 DWDZ  = (WW(I,J+1,K)-WW(I,J+1,K-1))*RDZ(K)
-                 TYYP  = MU(I,J+1,K)*( FOTH*DP(I,J+1,K) - 2._EB*(DUDX+DWDZ) )
-                 DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDX(I)
-                 DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZ(K)
-                 TYYM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DWDZ) )
-                 DTXYDX= RDX(I) *(TXYP-TXYM)
-                 DTYYDY= RDYN(J)*(TYYP-TYYM)
-                 DTYZDZ= RDZ(K) *(TYZP-TYZM)
-                 VTRM  = DTXYDX + DTYYDY + DTYZDZ
-                 FVY(I,J,K) = 0.25_EB*(UOMZ - WOMX) - GY(I) + RRHO*(GY(I)*RHO_0(K) - VTRM)
-              ENDDO
-           ENDDO
-        ENDDO
-        
-        ! Compute z-direction flux term FVZ
-        
-        DO K=LOC_MIN_K,LOC_MAX_K
-           DO J=LOC_MIN_J_P1,LOC_MAX_J
-              DO I=LOC_MIN_I_P1,LOC_MAX_I
-                 UP    = UU(I,J,K)   + UU(I,J,K+1)
-                 UM    = UU(I-1,J,K) + UU(I-1,J,K+1)
-                 VP    = VV(I,J,K)   + VV(I,J,K+1)
-                 VM    = VV(I,J-1,K) + VV(I,J-1,K+1)
-                 OMYP  = OMY(I,J,K)
-                 OMYM  = OMY(I-1,J,K)
-                 OMXP  = OMX(I,J,K)
-                 OMXM  = OMX(I,J-1,K)
-                 TXZP  = TXZ(I,J,K)
-                 TXZM  = TXZ(I-1,J,K)
-                 TYZP  = TYZ(I,J,K)
-                 TYZM  = TYZ(I,J-1,K)
-                 IC    = CELL_INDEX(I,J,K)
-                 IEXP  = CELL(IC)%EDGE_INDEX(4)
-                 IEXM  = CELL(IC)%EDGE_INDEX(3)
-                 IEYP  = CELL(IC)%EDGE_INDEX(8)
-                 IEYM  = CELL(IC)%EDGE_INDEX(7)
-                 IF (EDGE(IEXP)%OMEGA(-1)>-1.E5_EB) THEN
-                    OMXP = EDGE(IEXP)%OMEGA(-1)
-                    TYZP = EDGE(IEXP)%TAU(-1)
-                 ENDIF
-                 IF (EDGE(IEXM)%OMEGA( 1)>-1.E5_EB) THEN
-                    OMXM = EDGE(IEXM)%OMEGA( 1)
-                    TYZM = EDGE(IEXM)%TAU( 1)
-                 ENDIF
-                 IF (EDGE(IEYP)%OMEGA(-2)>-1.E5_EB) THEN
-                    OMYP = EDGE(IEYP)%OMEGA(-2)
-                    TXZP = EDGE(IEYP)%TAU(-2)
-                 ENDIF
-                 IF (EDGE(IEYM)%OMEGA( 2)>-1.E5_EB) THEN
-                    OMYM = EDGE(IEYM)%OMEGA( 2)
-                    TXZM = EDGE(IEYM)%TAU( 2)
-                 ENDIF
-                 UOMY  = UP*OMYP + UM*OMYM
-                 VOMX  = VP*OMXP + VM*OMXM
-                 RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I,J,K+1))
-                 DUDX  = (UU(I,J,K+1)-UU(I-1,J,K+1))*RDX(I)
-                 DVDY  = (VV(I,J,K+1)-VV(I,J-1,K+1))*RDY(J)
-                 TZZP  = MU(I,J,K+1)*( FOTH*DP(I,J,K+1) - 2._EB*(DUDX+DVDY) )
-                 DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDX(I)
-                 DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDY(J)
-                 TZZM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DVDY) )
-                 DTXZDX= RDX(I) *(TXZP-TXZM)
-                 DTYZDY= RDY(J) *(TYZP-TYZM)
-                 DTZZDZ= RDZN(K)*(TZZP-TZZM)
-                 VTRM  = DTXZDX + DTYZDY + DTZZDZ
-                 FVZ(I,J,K) = 0.25_EB*(VOMX - UOMY) - GZ(I) + RRHO*(GZ(I)*0.5_EB*(RHO_0(K)+RHO_0(K+1)) - VTRM)
-              ENDDO
-           ENDDO
-        ENDDO    
-        
-        END SUBROUTINE LOOP3D_SERIAL_CPU
-
 
     END PROGRAM LOOP3D
     
