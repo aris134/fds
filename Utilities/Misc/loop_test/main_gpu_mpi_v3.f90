@@ -1,8 +1,8 @@
 PROGRAM LOOP3D
     ! This program is the MPI-OpenMP GPU version of the original OpenMP-based loop3d program
     ! Code modifications were made to enable the mini-app to run across multiple compute nodes
-    ! V2: Includes velocity field updates and halo exchange within the sim loop.
-    ! V2: Flux average computation is performed on the GPU.
+    ! V3: Flux average computation is performed on the GPU with OpenMP atomics.
+    ! V3: CPU-based MPI
     USE OMP_LIB
     IMPLICIT NONE
     include 'mpif.h'
@@ -430,7 +430,6 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     !$OMP MAP(ALLOC:FVXP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
     !$OMP MAP(ALLOC:FVYP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
     !$OMP MAP(ALLOC:FVZP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1))
-    !!$OMP MAP(TO:FLUX_AVGS(1:3))
 
     T_SETUP_END = MPI_WTIME()
     SETUP_TIME = T_SETUP_END - T_SETUP_START
@@ -1359,7 +1358,6 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
             END DO
         END DO
 
-        !? implicit copying of FLUX_AVGS back to host ?
         CALL MPI_ALLREDUCE(FLUX_AVGS, FLUX_SUMS, 3, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, IERR)
 
         FLUX_AVGS(1) = FLUX_SUMS(1) / (GLOB_MAX_I*GLOB_MAX_J*GLOB_MAX_K)
