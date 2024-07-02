@@ -509,9 +509,9 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         WRITE(10,*) 'Setup Time=',MAX_SETUP_TIME
         WRITE(10,*) 'Loop Time(avg,min,max)=',AVG_LOOP_TIME,MIN_LOOP_TIME,MAX_LOOP_TIME
         WRITE(10,*) 'Total Time=',MAX_LOOP_TIME+MAX_SETUP_TIME
-        WRITE(10,*) 'mean FVX =',FLUX_AVGS(1)
-        WRITE(10,*) 'mean FVY =',FLUX_AVGS(2)
-        WRITE(10,*) 'mean FVZ =',FLUX_AVGS(3)
+        WRITE(10,*) 'mean FVX =',FLUX_AVGS_P(1)
+        WRITE(10,*) 'mean FVY =',FLUX_AVGS_P(2)
+        WRITE(10,*) 'mean FVZ =',FLUX_AVGS_P(3)
         WRITE(10,*) 'Max Flux Avg Time =',MAX_FLUX_TIME
         WRITE(10,*) 'Max Loop3D Time =',MAX_LOOP3D_TIME
         WRITE(10,*) 'Max Tau OMG Time= ',MAX_TAU_OMG_TIME
