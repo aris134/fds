@@ -1,8 +1,7 @@
 PROGRAM LOOP3D
-    ! This program is the MPI-OpenMP GPU version of the original OpenMP-based loop3d program
+    ! This program is the MPI-OpenMP CPU version of the original OpenMP-based loop3d program
     ! Code modifications were made to enable the mini-app to run across multiple compute nodes
-    ! V3: Flux average computation is performed on the GPU with OpenMP atomics.
-    ! V3: CPU-based MPI
+    ! V3: OpenMP Pragmas in the same places we have them on the corresponding GPU version
     USE OMP_LIB
     IMPLICIT NONE
     include 'mpif.h'
@@ -16,7 +15,7 @@ PROGRAM LOOP3D
     INTEGER, PARAMETER :: NUM_TIME_STEPS = 100
     INTEGER, PARAMETER :: BOX_SIZE = 6
     INTEGER, PARAMETER :: EB = SELECTED_REAL_KIND(12)
-    INTEGER, PARAMETER :: IBAR = 256, JBAR = 256, KBAR =256
+    INTEGER, PARAMETER :: IBAR = 512, JBAR = 512, KBAR =512
     INTEGER, PARAMETER :: NEDGE = 12
     REAL(EB), PARAMETER :: FOTH = 4.0_EB/3.0_EB
     REAL(EB) :: FLUX_AVGS(3)
@@ -96,7 +95,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     !$OMP END PARALLEL
     
     IF (MY_RANK==0) THEN
-        WRITE(FILENAME,'(A,I4,A,I2,A,I4,A)') 'loop3d_',IBAR,'GRID_',NT,'THR_',INT(NUM_TASKS),'RANKS_GPU_MPI_V3.txt'
+        WRITE(FILENAME,'(A,I4,A,I2,A,I4,A)') 'loop3d_',IBAR,'GRID_',NT,'THR_',INT(NUM_TASKS),'RANKS_CPU_MPI_V1.txt'
         WRITE(*,*) 'Starting Loop3D, out file: ',TRIM(FILENAME)
         WRITE(*,*) 'Number of detected devices: ',OMP_GET_NUM_DEVICES()
         OPEN(UNIT=10,FILE=TRIM(FILENAME),STATUS='UNKNOWN')
@@ -128,7 +127,6 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     T_TOTAL_TAU_OMG_EXCHANGE = 0
     T_TOTAL_VEL = 0
     T_TOTAL_VEL_EXCHANGE = 0
-    FLUX_AVGS = 0
 
     ! Decompose the domain
     ALLOCATE(ALL_TASK_BBOXES(NUM_TASKS * BOX_SIZE)) ! AoS format: ..., imin_p, jmin_p, kmin_p, imax_p, jmax_p, kmax_p, imin_(p+1), ...
@@ -401,40 +399,10 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
     OMY => WORK5
     OMZ => WORK6
 
-    ! Establish target data environment
-    !$OMP TARGET ENTER DATA MAP(TO:UU(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:VV(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:WW(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:OMX(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:OMY(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:OMZ(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:TXY(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:TXZ(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:TYZ(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:CC(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:CELL(0:GLOB_MAX_IC),EDGE(0:GLOB_MAX_EDGE)) &
-    !$OMP MAP(TO:RHOP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:RDXP(LOC_MIN_HALO_I:LOC_MAX_HALO_I),RDYP(LOC_MIN_HALO_J:LOC_MAX_HALO_J),RDZP(LOC_MIN_HALO_K:LOC_MAX_HALO_K)) &
-    !$OMP MAP(TO:RDXNP(LOC_MIN_HALO_I:LOC_MAX_HALO_I),RDYNP(LOC_MIN_HALO_J:LOC_MAX_HALO_J),RDZNP(LOC_MIN_HALO_K:LOC_MAX_HALO_K)) &
-    !$OMP MAP(TO:RHO_0(LOC_MIN_HALO_K:LOC_MAX_HALO_K),GX(LOC_MIN_HALO_I:LOC_MAX_HALO_I),GY(LOC_MIN_HALO_I:LOC_MAX_HALO_I),GZ(LOC_MIN_HALO_I:LOC_MAX_HALO_I)) &
-    !$OMP MAP(TO:MUP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:DP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(TO:XP(LOC_MIN_HALO_I:LOC_MAX_HALO_I),YP(LOC_MIN_HALO_J:LOC_MAX_HALO_J),ZP(LOC_MIN_HALO_K:LOC_MAX_HALO_K)) &
-    !$OMP MAP(TO:SEND_COORDS(1:3*TOTAL_SEND_PTS),RECV_COORDS(1:3*TOTAL_RECV_PTS)) &
-    !$OMP MAP(ALLOC:U_SEND(1:TOTAL_SEND_PTS),V_SEND(1:TOTAL_SEND_PTS),W_SEND(1:TOTAL_SEND_PTS)) &
-    !$OMP MAP(ALLOC:U_RECV(1:TOTAL_RECV_PTS),V_RECV(1:TOTAL_RECV_PTS),W_RECV(1:TOTAL_RECV_PTS)) &
-    !$OMP MAP(ALLOC:OMX_SEND(1:TOTAL_SEND_PTS),OMY_SEND(1:TOTAL_SEND_PTS),OMZ_SEND(1:TOTAL_SEND_PTS)) &
-    !$OMP MAP(ALLOC:OMX_RECV(1:TOTAL_RECV_PTS),OMY_RECV(1:TOTAL_RECV_PTS),OMZ_RECV(1:TOTAL_RECV_PTS)) &
-    !$OMP MAP(ALLOC:TXY_SEND(1:TOTAL_SEND_PTS),TXZ_SEND(1:TOTAL_SEND_PTS),TYZ_SEND(1:TOTAL_SEND_PTS)) &
-    !$OMP MAP(ALLOC:TXY_RECV(1:TOTAL_RECV_PTS),TXZ_RECV(1:TOTAL_RECV_PTS),TYZ_RECV(1:TOTAL_RECV_PTS)) &
-    !$OMP MAP(ALLOC:FVXP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(ALLOC:FVYP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(ALLOC:FVZP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1))
-
     T_SETUP_END = MPI_WTIME()
     SETUP_TIME = T_SETUP_END - T_SETUP_START
     CALL MPI_REDUCE(SETUP_TIME, MAX_SETUP_TIME, 1, MPI_DOUBLE_PRECISION, MPI_MAX, 0, MPI_COMM_WORLD, IERR)
-    
+
     ! BEGIN SIM LOOP
     T_SIM_START = MPI_WTIME()
     SIM_LOOP: DO ISTEP = 1, NUM_TIME_STEPS
@@ -470,7 +438,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
        T_TOTAL_TAU_OMG_EXCHANGE = T_TOTAL_TAU_OMG_EXCHANGE + (T_ITER_END_TAU_OMG_EXCHANGE - T_ITER_START_TAU_OMG_EXCHANGE)
        ! 5. Update the flux terms
        T_ITER_START_LOOP3D = MPI_WTIME()
-       CALL LOOP3D_OMP_GPU()
+       CALL LOOP3D_OMP_CPU()
        T_ITER_END_LOOP3D = MPI_WTIME()
        T_TOTAL_LOOP3D = T_TOTAL_LOOP3D + (T_ITER_END_LOOP3D - T_ITER_START_LOOP3D)
        ! 6. Compute flux averages
@@ -481,11 +449,6 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
        T_ITER_END_FLUX_AVG = MPI_WTIME()
        T_TOTAL_FLUX_AVG = T_TOTAL_FLUX_AVG + (T_ITER_END_FLUX_AVG - T_ITER_START_FLUX_AVG)
     END DO SIM_LOOP
-
-    ! assuming we would copy back the calculated fluxes back to the host at the end...?
-    !$OMP TARGET EXIT DATA MAP(FROM:FVXP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(FROM:FVYP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1)) &
-    !$OMP MAP(FROM:FVZP(LOC_MIN_HALO_I:LOC_MAX_I_P1,LOC_MIN_HALO_J:LOC_MAX_J_P1,LOC_MIN_HALO_K:LOC_MAX_K_P1))
 
     T_SIM_END = MPI_WTIME()
     CALL MPI_Barrier(MPI_COMM_WORLD, IERR)
@@ -535,11 +498,14 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
 
     CONTAINS
     
-    SUBROUTINE LOOP3D_OMP_GPU()
+    SUBROUTINE LOOP3D_OMP_CPU()
        
        ! Compute x-direction flux term FVX
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128) COLLAPSE(3)
+!$OMP PARALLEL PRIVATE(WP,WM,VP,VM,UP,UM,OMXP,OMXM,OMYP,OMYM,OMZP,OMZM,TXZP,TXZM,TXYP,TXYM,TYZP,TYZM, &
+!$OMP& IC,IEXP,IEXM,IEYP,IEYM,IEZP,IEZM,RRHO,DUDX,DVDY,DWDZ,VTRM)
+
+!$OMP DO SCHEDULE(STATIC) PRIVATE(WOMY, VOMZ, TXXP, TXXM, DTXXDX, DTXYDY, DTXZDZ) COLLAPSE(3)
         DO K=LOC_MIN_K_P1,LOC_MAX_K
             DO J=LOC_MIN_J_P1,LOC_MAX_J
                DO I=LOC_MIN_I,LOC_MAX_I
@@ -579,24 +545,25 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
                   WOMY  = WP*OMYP + WM*OMYM
                   VOMZ  = VP*OMZP + VM*OMZM
                   RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I+1,J,K))
-                  DVDY  = (VV(I+1,J,K)-VV(I+1,J-1,K))*RDYP(J)
-                  DWDZ  = (WW(I+1,J,K)-WW(I+1,J,K-1))*RDZP(K)
-                  TXXP  = MUP(I+1,J,K)*( FOTH*DP(I+1,J,K) - 2._EB*(DVDY+DWDZ) )
-                  DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDYP(J)
-                  DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZP(K)
-                  TXXM  = MUP(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DVDY+DWDZ) )
-                  DTXXDX= RDXP(I)*(TXXP-TXXM)
-                  DTXYDY= RDYP(J) *(TXYP-TXYM)
-                  DTXZDZ= RDZP(K) *(TXZP-TXZM)
+                  DVDY  = (VV(I+1,J,K)-VV(I+1,J-1,K))*RDY(J)
+                  DWDZ  = (WW(I+1,J,K)-WW(I+1,J,K-1))*RDZ(K)
+                  TXXP  = MU(I+1,J,K)*( FOTH*DP(I+1,J,K) - 2._EB*(DVDY+DWDZ) )
+                  DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDY(J)
+                  DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZ(K)
+                  TXXM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DVDY+DWDZ) )
+                  DTXXDX= RDXN(I)*(TXXP-TXXM)
+                  DTXYDY= RDY(J) *(TXYP-TXYM)
+                  DTXZDZ= RDZ(K) *(TXZP-TXZM)
                   VTRM  = DTXXDX + DTXYDY + DTXZDZ
-                  FVXP(I,J,K) = 0.25_EB*(WOMY - VOMZ) - GX(I) + RRHO*(GX(I)*RHO_0(K) - VTRM)
+                  FVX(I,J,K) = 0.25_EB*(WOMY - VOMZ) - GX(I) + RRHO*(GX(I)*RHO_0(K) - VTRM)
                ENDDO
             ENDDO
          ENDDO
+         !$OMP END DO NOWAIT
          
          ! Compute y-direction flux term FVY
          
-         !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128) COLLAPSE(3)
+         !$OMP DO SCHEDULE(STATIC) PRIVATE(WOMX, UOMZ, TYYP, TYYM, DTXYDX, DTYYDY, DTYZDZ) COLLAPSE(3)
          DO K=LOC_MIN_K_P1,LOC_MAX_K
             DO J=LOC_MIN_J,LOC_MAX_J
                DO I=LOC_MIN_I_P1,LOC_MAX_I
@@ -636,24 +603,25 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
                   WOMX  = WP*OMXP + WM*OMXM
                   UOMZ  = UP*OMZP + UM*OMZM
                   RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I,J+1,K))
-                  DUDX  = (UU(I,J+1,K)-UU(I-1,J+1,K))*RDXP(I)
-                  DWDZ  = (WW(I,J+1,K)-WW(I,J+1,K-1))*RDZP(K)
-                  TYYP  = MUP(I,J+1,K)*( FOTH*DP(I,J+1,K) - 2._EB*(DUDX+DWDZ) )
-                  DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDXP(I)
-                  DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZP(K)
-                  TYYM  = MUP(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DWDZ) )
-                  DTXYDX= RDXP(I) *(TXYP-TXYM)
-                  DTYYDY= RDYNP(J)*(TYYP-TYYM)
-                  DTYZDZ= RDZP(K) *(TYZP-TYZM)
+                  DUDX  = (UU(I,J+1,K)-UU(I-1,J+1,K))*RDX(I)
+                  DWDZ  = (WW(I,J+1,K)-WW(I,J+1,K-1))*RDZ(K)
+                  TYYP  = MU(I,J+1,K)*( FOTH*DP(I,J+1,K) - 2._EB*(DUDX+DWDZ) )
+                  DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDX(I)
+                  DWDZ  = (WW(I,J,K)-WW(I,J,K-1))*RDZ(K)
+                  TYYM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DWDZ) )
+                  DTXYDX= RDX(I) *(TXYP-TXYM)
+                  DTYYDY= RDYN(J)*(TYYP-TYYM)
+                  DTYZDZ= RDZ(K) *(TYZP-TYZM)
                   VTRM  = DTXYDX + DTYYDY + DTYZDZ
-                  FVYP(I,J,K) = 0.25_EB*(UOMZ - WOMX) - GY(I) + RRHO*(GY(I)*RHO_0(K) - VTRM)
+                  FVY(I,J,K) = 0.25_EB*(UOMZ - WOMX) - GY(I) + RRHO*(GY(I)*RHO_0(K) - VTRM)
                ENDDO
             ENDDO
          ENDDO
+         !$OMP END DO NOWAIT
          
          ! Compute z-direction flux term FVZ
          
-         !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128) COLLAPSE(3)
+         !$OMP DO SCHEDULE(STATIC) PRIVATE(UOMY, VOMX, TZZP, TZZM, DTXZDX, DTYZDY, DTZZDZ) COLLAPSE(3)
          DO K=LOC_MIN_K,LOC_MAX_K
             DO J=LOC_MIN_J_P1,LOC_MAX_J
                DO I=LOC_MIN_I_P1,LOC_MAX_I
@@ -693,22 +661,24 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
                   UOMY  = UP*OMYP + UM*OMYM
                   VOMX  = VP*OMXP + VM*OMXM
                   RRHO  = 2._EB/(RHOP(I,J,K)+RHOP(I,J,K+1))
-                  DUDX  = (UU(I,J,K+1)-UU(I-1,J,K+1))*RDXP(I)
-                  DVDY  = (VV(I,J,K+1)-VV(I,J-1,K+1))*RDYP(J)
-                  TZZP  = MUP(I,J,K+1)*( FOTH*DP(I,J,K+1) - 2._EB*(DUDX+DVDY) )
-                  DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDXP(I)
-                  DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDYP(J)
-                  TZZM  = MUP(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DVDY) )
-                  DTXZDX= RDXP(I) *(TXZP-TXZM)
-                  DTYZDY= RDYP(J) *(TYZP-TYZM)
-                  DTZZDZ= RDZNP(K)*(TZZP-TZZM)
+                  DUDX  = (UU(I,J,K+1)-UU(I-1,J,K+1))*RDX(I)
+                  DVDY  = (VV(I,J,K+1)-VV(I,J-1,K+1))*RDY(J)
+                  TZZP  = MU(I,J,K+1)*( FOTH*DP(I,J,K+1) - 2._EB*(DUDX+DVDY) )
+                  DUDX  = (UU(I,J,K)-UU(I-1,J,K))*RDX(I)
+                  DVDY  = (VV(I,J,K)-VV(I,J-1,K))*RDY(J)
+                  TZZM  = MU(I,J,K)  *( FOTH*DP(I,J,K)   - 2._EB*(DUDX+DVDY) )
+                  DTXZDX= RDX(I) *(TXZP-TXZM)
+                  DTYZDY= RDY(J) *(TYZP-TYZM)
+                  DTZZDZ= RDZN(K)*(TZZP-TZZM)
                   VTRM  = DTXZDX + DTYZDY + DTZZDZ
-                  FVZP(I,J,K) = 0.25_EB*(VOMX - UOMY) - GZ(I) + RRHO*(GZ(I)*0.5_EB*(RHO_0(K)+RHO_0(K+1)) - VTRM)
+                  FVZ(I,J,K) = 0.25_EB*(VOMX - UOMY) - GZ(I) + RRHO*(GZ(I)*0.5_EB*(RHO_0(K)+RHO_0(K+1)) - VTRM)
                ENDDO
             ENDDO
          ENDDO
+         !$OMP END DO NOWAIT
          
-    END SUBROUTINE LOOP3D_OMP_GPU
+         !$OMP END PARALLEL
+    END SUBROUTINE LOOP3D_OMP_CPU
 
     SUBROUTINE EXCHANGE_TAU_OMEGA(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
                             HALO_RECV_DISPLS,RECV_COORDS,RECV_COORD_DISPLS,OMX_SEND,OMX_RECV,OMY_SEND,OMY_RECV,OMZ_SEND,&
@@ -746,8 +716,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         REAL(EB), POINTER, INTENT(IN OUT) :: TYZ (:,:,:)
         INTEGER :: RK, POINT, COORD_OFFSET, RANK_OFFSET, RECV_PTS, I, J, K
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128)
         ! Set up the values to send via halo exchange
+        !$OMP PARALLEL DO SCHEDULE(STATIC)
         DO POINT=0,TOTAL_SEND_PTS-1
             I = SEND_COORDS(POINT*3 + 1)
             J = SEND_COORDS(POINT*3 + 2)
@@ -759,25 +729,19 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
             TXY_SEND(POINT + 1) = TXY(I,J,K)
             TYZ_SEND(POINT + 1) = TYZ(I,J,K)
         END DO
+        !$OMP END DO
+        !$OMP END PARALLEL
 
-        ! Map send halos FROM device to host
-        !? If we have GPU-aware MPI then we shouldn't need to these device-to-host copies
-        !$OMP TARGET UPDATE FROM(OMX_SEND(1:TOTAL_SEND_PTS), OMY_SEND(1:TOTAL_SEND_PTS), OMZ_SEND(1:TOTAL_SEND_PTS)) &
-        !$OMP FROM(TXY_SEND(1:TOTAL_SEND_PTS), TXZ_SEND(1:TOTAL_SEND_PTS), TYZ_SEND(1:TOTAL_SEND_PTS))
-        ! Exchange each of the velocity components along the halo regions (on the host)
+        ! Exchange each of the velocity components along the halo regions
         CALL EXCHANGE_DOUBLE_DATA(OMX_SEND,OMX_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(OMY_SEND,OMY_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(OMZ_SEND,OMZ_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(TXY_SEND,TXY_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(TXZ_SEND,TXZ_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(TYZ_SEND,TYZ_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
-        ! Map recv halos on the host TO device
-        !? Once again if we have GPU-aware MPI then we shouldn't need these host-to-device copies
-        !$OMP TARGET UPDATE TO(OMX_RECV(1:TOTAL_RECV_PTS), OMY_RECV(1:TOTAL_RECV_PTS), OMZ_RECV(1:TOTAL_RECV_PTS)) &
-        !$OMP TO(TXY_RECV(1:TOTAL_RECV_PTS), TXZ_RECV(1:TOTAL_RECV_PTS), TYZ_RECV(1:TOTAL_RECV_PTS))
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128)
         ! Set up the communicated values received through halo exchange
+        !$OMP PARALLEL DO SCHEDULE(STATIC)
         DO POINT=0,TOTAL_RECV_PTS-1
             I = RECV_COORDS(POINT*3 + 1)
             J = RECV_COORDS(POINT*3 + 2)
@@ -789,7 +753,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
             TXY(I,J,K) = TXY_RECV(POINT+1)
             TYZ(I,J,K) = TYZ_RECV(POINT+1)
         END DO
-
+       !$OMP END DO
+       !$OMP END PARALLEL
     END SUBROUTINE EXCHANGE_TAU_OMEGA
 
     SUBROUTINE EXCHANGE_CELL_INDEX(NUM_NBRS,NBR_EXT_BBOXES,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,&
@@ -858,8 +823,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         REAL(EB), POINTER, INTENT(IN OUT) :: WW (:,:,:)
         INTEGER :: RK, POINT, COORD_OFFSET, RANK_OFFSET, RECV_PTS, I, J, K
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128)
         ! Set up the velocities to send via halo exchange
+        !$OMP PARALLEL DO SCHEDULE(STATIC)
         DO POINT=0,TOTAL_SEND_PTS-1
             I = SEND_COORDS(POINT*3 + 1)
             J = SEND_COORDS(POINT*3 + 2)
@@ -868,20 +833,16 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
             V_SEND(POINT + 1) = VV(I,J,K)
             W_SEND(POINT + 1) = WW(I,J,K)
         END DO
+        !$OMP END DO
+        !$OMP END PARALLEL
 
-        ! Map send halos FROM device to host
-        !? If we have GPU-aware MPI then we shouldn't need to this device-to-host copy
-        !$OMP TARGET UPDATE FROM(U_SEND(1:TOTAL_SEND_PTS), V_SEND(1:TOTAL_SEND_PTS), W_SEND(1:TOTAL_SEND_PTS))
-        ! Exchange each of the velocity components along the halo regions (on the host)
+        ! Exchange each of the velocity components along the halo regions
         CALL EXCHANGE_DOUBLE_DATA(U_SEND,U_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(V_SEND,V_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
         CALL EXCHANGE_DOUBLE_DATA(W_SEND,W_RECV,NUM_NBRS,HALO_SEND_SIZES,HALO_SEND_DISPLS,HALO_RECV_SIZES,HALO_RECV_DISPLS)
-        ! Map recv halos on the host TO device
-        !? Once again if we have GPU-aware MPI then we shouldn't need this host-to-device copy
-        !$OMP TARGET UPDATE TO(U_RECV(1:TOTAL_RECV_PTS), V_RECV(1:TOTAL_RECV_PTS), W_RECV(1:TOTAL_RECV_PTS))
         
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128)
         ! Set up the communicated velocities received through halo exchange
+        !$OMP PARALLEL DO SCHEDULE(STATIC)
         DO POINT=0,TOTAL_RECV_PTS-1
             I = RECV_COORDS(POINT*3 + 1)
             J = RECV_COORDS(POINT*3 + 2)
@@ -890,6 +851,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
             VV(I,J,K) = V_RECV(POINT+1)
             WW(I,J,K) = W_RECV(POINT+1)
         END DO
+        !$OMP END DO
+        !$OMP END PARALLEL
 
     END SUBROUTINE EXCHANGE_VELOCITY
 
@@ -1344,19 +1307,9 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         REAL(EB) :: FLUX_SUMS (3)
         INTEGER :: IERR
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128) COLLAPSE(3)
-        DO K=LOC_MIN_K_P1,LOC_MAX_K
-            DO J=LOC_MIN_J_P1,LOC_MAX_J
-                DO I=LOC_MIN_I_P1,LOC_MAX_I
-                    !$OMP ATOMIC
-                    FLUX_AVGS(1) = FLUX_AVGS(1) + FVXP(I,J,K)
-                    !$OMP ATOMIC
-                    FLUX_AVGS(2) = FLUX_AVGS(2) + FVYP(I,J,K)
-                    !$OMP ATOMIC
-                    FLUX_AVGS(3) = FLUX_AVGS(3) + FVZP(I,J,K)
-                END DO
-            END DO
-        END DO
+        FLUX_AVGS(1) = SUM(FVXP(LOC_MIN_I_P1:LOC_MAX_I,LOC_MIN_J_P1:LOC_MAX_J,LOC_MIN_K_P1:LOC_MAX_K))
+        FLUX_AVGS(2) = SUM(FVYP(LOC_MIN_I_P1:LOC_MAX_I,LOC_MIN_J_P1:LOC_MAX_J,LOC_MIN_K_P1:LOC_MAX_K))
+        FLUX_AVGS(3) = SUM(FVZP(LOC_MIN_I_P1:LOC_MAX_I,LOC_MIN_J_P1:LOC_MAX_J,LOC_MIN_K_P1:LOC_MAX_K))
 
         CALL MPI_ALLREDUCE(FLUX_AVGS, FLUX_SUMS, 3, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, IERR)
 
@@ -1376,8 +1329,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         REAL(EB), POINTER, INTENT(IN) :: YP (:)
         REAL(EB), POINTER, INTENT(IN) :: ZP (:)
         INTEGER :: I, J, K
-
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128) COLLAPSE(3)
+        
+        !$OMP PARALLEL DO SCHEDULE(STATIC) COLLAPSE(3)
         DO K=LOC_MIN_K,LOC_MAX_K
             DO J=LOC_MIN_J,LOC_MAX_J
                DO I=LOC_MIN_I,LOC_MAX_I
@@ -1388,6 +1341,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
                ENDDO
             ENDDO
         ENDDO
+        !$OMP END DO
+        !$OMP END PARALLEL
     END SUBROUTINE UPDATE_VELOCITY
 
     SUBROUTINE UPDATE_TAU_OMEGA(LOC_MIN_I, LOC_MAX_I, LOC_MIN_J, LOC_MAX_J,&
@@ -1411,7 +1366,7 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
         INTEGER :: I, J, K
         REAL(EB) :: MUX, MUY, MUZ, DUDY, DVDX, DUDZ, DWDX, DVDZ, DWDY
         
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO NUM_THREADS(128) COLLAPSE(3)
+        !$OMP PARALLEL DO SCHEDULE(STATIC) PRIVATE(MUX,MUY,MUZ,DUDY,DVDX,DUDZ,DWDX,DVDZ,DWDY) COLLAPSE(3)
         ! Compute vorticity & stress terms
             DO K=LOC_MIN_K,LOC_MAX_K
                 DO J=LOC_MIN_J,LOC_MAX_J
@@ -1434,7 +1389,8 @@ TYPE(EDGE_TYPE), ALLOCATABLE, DIMENSION(:) :: EDGE
                 ENDDO
                 ENDDO
             ENDDO
-
+        !$OMP END DO
+        !$OMP END PARALLEL
     END SUBROUTINE UPDATE_TAU_OMEGA
     
     ! RK_M1 : rank - 1.
